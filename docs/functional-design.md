@@ -36,11 +36,31 @@ Support **Hermes Agent only**.
 
 The adapter should locate the Hermes Skill directory.
 
-Expected location:
+Discovery uses the following priority:
 
 ```text
-~/.hermes/skills/
+init --path (explicit)
+      ↓
+$SKILLSYNC_SKILLS_DIR (SkillSync override)
+      ↓
+last init (config file)
+      ↓
+$HERMES_HOME/skills
+      ↓
+~/.hermes/skills
+      ↓
+/opt/.hermes/skills
+      ↓
+/opt/data/.hermes/skills
+      ↓
+/usr/local/.hermes/skills
+      ↓
+bounded search for "skills" directories (hint only, user must pass --path)
 ```
+
+The search is depth-limited, skips hidden and dependency directories, and
+only ever presents candidates: SkillSync never picks a searched directory
+automatically.
 
 The implementation should isolate this path behind a simple Agent adapter so OpenClaw can be added later.
 

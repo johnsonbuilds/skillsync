@@ -20,7 +20,13 @@ from typing import Iterator, Optional
 import typer
 
 from . import __version__, git
-from .agent import Agent, detect_agent, load_skills_dir, save_skills_dir
+from .agent import (
+    Agent,
+    detect_agent,
+    load_skills_dir,
+    save_skills_dir,
+    search_skill_dirs,
+)
 from .skills import SkillChange, aggregate_changes, group_by_skill, list_skills
 
 app = typer.Typer(
@@ -195,12 +201,26 @@ def init(
             skills_dir = path.expanduser().resolve()
             agent = Agent(key="custom", name="Custom", skills_dir=skills_dir)
         else:
-            # Resolution order: --path > env var > config file > auto-detect.
+            # Resolution order: --path > env var > config file > candidate
+            # chain ($HERMES_HOME/skills, ~/.hermes/skills, /opt/...).
             resolved = load_skills_dir()
             if resolved is None:
+                hints = search_skill_dirs()
+                if hints:
+                    listing = "\n".join(f"  {hint}" for hint in hints)
+                    _die(
+                        "Error: could not find an Agent Skills directory.\n"
+                        "\n"
+                        "These directories look like Skills directories:\n"
+                        f"{listing}\n"
+                        "\n"
+                        "Pass one explicitly:\n"
+                        "  skillsync init --path /path/to/skills"
+                    )
                 _die(
                     "Error: could not find an Agent Skills directory.\n"
-                    "Expected ~/.hermes/skills — or pass one explicitly:\n"
+                    "Tried $HERMES_HOME/skills, ~/.hermes/skills and the\n"
+                    "well-known /opt locations — or pass one explicitly:\n"
                     "  skillsync init --path /path/to/skills"
                 )
             detected = detect_agent()
