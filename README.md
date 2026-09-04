@@ -140,7 +140,21 @@ skillsync restore browser-research a83f91c
 
 ### Install
 
-Coming soon.
+Requires Python 3.12+ and git.
+
+One-line install (creates an isolated venv and exposes the `skillsync` command):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/johnsonbuilds/skillsync/main/install.sh | sh
+```
+
+Or install from a local checkout:
+
+```bash
+git clone https://github.com/johnsonbuilds/skillsync
+cd skillsync
+pip install .
+```
 
 ### Initialize
 
@@ -332,13 +346,13 @@ The priority is real-world usage over feature completeness.
 ### MVP
 
 * [x] Product definition
-* [ ] Hermes Skill detection
-* [ ] `skillsync init`
-* [ ] Skill-level `status`
-* [ ] Skill-aware `diff`
-* [ ] `snapshot`
-* [ ] `log`
-* [ ] `restore`
+* [x] Hermes Skill detection
+* [x] `skillsync init`
+* [x] Skill-level `status`
+* [x] Skill-aware `diff`
+* [x] `snapshot`
+* [x] `log`
+* [x] `restore`
 
 ### Later
 
@@ -359,6 +373,15 @@ The following are intentionally **not part of the current roadmap**:
 * Enterprise management
 
 ---
+
+## Development
+
+Run the test suite from a local checkout:
+
+```bash
+pip install -e .[dev]
+pytest
+```
 
 ## Contributing
 

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "skillsync"
+version = "0.1.0"
+description = "Git-based version control for Agent Skills."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [{ name = "johnsonbuilds" }]
+dependencies = ["typer>=0.12"]
+
+[project.scripts]
+skillsync = "skillsync.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/skillsync"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
