@@ -110,11 +110,14 @@ def ls_files(repo: Path, pathspec: str) -> list[str]:
     return [line for line in out.splitlines() if line]
 
 
-def ls_tree(repo: Path, ref: str, pathspec: str) -> list[str]:
-    """Paths under ``pathspec`` in ``ref``; empty when the repo has no commits."""
+def ls_tree(repo: Path, ref: str, pathspec: str | None = None) -> list[str]:
+    """Paths in ``ref`` (optionally under ``pathspec``); empty without commits."""
     if not has_commits(repo):
         return []
-    out = git("ls-tree", "-r", "--name-only", ref, "--", pathspec, cwd=repo, check=False)
+    args = ["ls-tree", "-r", "--name-only", ref]
+    if pathspec is not None:
+        args += ["--", pathspec]
+    out = git(*args, cwd=repo, check=False)
     return [line for line in out.splitlines() if line]
 
 

@@ -21,13 +21,23 @@ import typer
 
 from . import __version__, git
 from .agent import (
+    AGENT_KEYS,
+    AGENT_KEYS_HELP,
     Agent,
-    detect_agent,
+    find_agent,
+    find_agents,
+    label_agent,
     load_skills_dir,
     save_skills_dir,
     search_skill_dirs,
 )
-from .skills import SkillChange, aggregate_changes, group_by_skill, list_skills
+from .skills import (
+    SkillChange,
+    aggregate_changes,
+    discover_skills,
+    group_by_skill,
+    head_skill_roots,
+)
 
 app = typer.Typer(
     help="Git-based version control for Agent Skills.",
@@ -112,29 +122,35 @@ def _skills_dir() -> Path:
 
 
 def _skill_exists(skills_dir: Path, name: str) -> bool:
-    """A skill exists when its directory is on disk or in git history."""
-    if (skills_dir / name).is_dir():
+    """A Skill exists when it is on disk or in the last snapshot (HEAD).
+
+    ``name`` is the Skill identity: its path relative to the Skills
+    directory (e.g. ``browser-research`` or ``productivity/pdf``).
+    """
+    if name in set(discover_skills(skills_dir)):
         return True
-    if git.ls_files(skills_dir, name):
-        return True
-    return bool(git.ls_tree(skills_dir, "HEAD", name))
+    return name in head_skill_roots(skills_dir)
 
 
 def _skill_changes(skills_dir: Path) -> tuple[list[SkillChange], int]:
     """Aggregate file-level status into Skill-level changes."""
     entries = git.status_porcelain(skills_dir)
-    grouped = group_by_skill([entry.path for entry in entries])
-    in_head: dict[str, bool] = {}
-    if git.has_commits(skills_dir):
-        in_head = {
-            name: bool(git.ls_tree(skills_dir, "HEAD", name)) for name in grouped
-        }
-    changes = aggregate_changes(entries, in_head)
-    root_files = sum(1 for entry in entries if "/" not in entry.path)
-    return changes, root_files
+    disk_roots = discover_skills(skills_dir)
+    head_roots = head_skill_roots(skills_dir)
+    all_roots = set(disk_roots) | head_roots
+    changes = aggregate_changes(entries, all_roots, head_roots)
+    managed = {
+        path
+        for paths in group_by_skill(
+            [entry.path for entry in entries], all_roots
+        ).values()
+        for path in paths
+    }
+    unmanaged = sum(1 for entry in entries if entry.path not in managed)
+    return changes, unmanaged
 
 
-def _print_status(changes: list[SkillChange], root_files: int) -> None:
+def _print_status(changes: list[SkillChange], unmanaged: int) -> None:
     if not changes:
         typer.echo("No changes.")
         return
@@ -147,29 +163,30 @@ def _print_status(changes: list[SkillChange], root_files: int) -> None:
         blocks.append("\n".join(lines))
     typer.echo("Skills\n")
     typer.echo("\n\n".join(blocks))
-    if root_files:
-        typer.echo(f"\n(note: {root_files} non-skill file(s) changed at the repository root)")
+    if unmanaged:
+        typer.echo(f"\n(note: {unmanaged} file(s) changed outside any Skill)")
     count = len(changes)
     typer.echo(f"\n{count} skill{'s' if count != 1 else ''} changed")
 
 
-def _print_skill_diff(skills_dir: Path, name: str) -> None:
+def _print_skill_diff(skills_dir: Path, skill: str) -> None:
+    prefix = skill.rstrip("/") + "/"
     entries = [
         entry
-        for entry in git.status_porcelain(skills_dir, name)
-        if entry.path.split("/")[0] == name
+        for entry in git.status_porcelain(skills_dir, skill)
+        if entry.path.startswith(prefix)
     ]
     untracked = [entry for entry in entries if entry.untracked]
     tracked_diff = ""
     if git.has_commits(skills_dir):
-        tracked_diff = git.diff_head(skills_dir, name).rstrip("\n")
+        tracked_diff = git.diff_head(skills_dir, skill).rstrip("\n")
 
     if not tracked_diff and not untracked:
-        typer.echo(f"{name}\n")
+        typer.echo(f"{skill}\n")
         typer.echo("No changes.")
         return
 
-    typer.echo(f"{name}\n")
+    typer.echo(f"{skill}\n")
     if tracked_diff:
         typer.echo(tracked_diff)
     for entry in untracked:
@@ -190,52 +207,91 @@ def init(
     path: Optional[Path] = typer.Option(
         None,
         "--path",
-        help="Skills directory to manage (default: auto-detect Hermes).",
+        help="Skills directory to manage (default: auto-detect).",
+    ),
+    agent_key: Optional[str] = typer.Option(
+        None,
+        "--agent",
+        help=(
+            "Use this harness's Skills directory "
+            f"({AGENT_KEYS_HELP}); for use when several are detected."
+        ),
     ),
 ) -> None:
     """Detect the Agent Skills directory and initialize SkillSync."""
     _require_git()
+    if agent_key is not None and agent_key not in AGENT_KEYS:
+        _die(
+            f"Error: unknown agent: {agent_key}\n"
+            f"Known agents: {AGENT_KEYS_HELP}"
+        )
     with git_errors():
         agent: Agent
         if path is not None:
             skills_dir = path.expanduser().resolve()
             agent = Agent(key="custom", name="Custom", skills_dir=skills_dir)
-        else:
-            # Resolution order: --path > env var > config file > candidate
-            # chain ($HERMES_HOME/skills, ~/.hermes/skills, /opt/...).
-            resolved = load_skills_dir()
-            if resolved is None:
-                hints = search_skill_dirs()
-                if hints:
-                    listing = "\n".join(f"  {hint}" for hint in hints)
-                    _die(
-                        "Error: could not find an Agent Skills directory.\n"
-                        "\n"
-                        "These directories look like Skills directories:\n"
-                        f"{listing}\n"
-                        "\n"
-                        "Pass one explicitly:\n"
-                        "  skillsync init --path /path/to/skills"
-                    )
+        elif agent_key is not None:
+            agent = find_agent(agent_key)
+            if agent is None:
                 _die(
-                    "Error: could not find an Agent Skills directory.\n"
-                    "Tried $HERMES_HOME/skills, ~/.hermes/skills and the\n"
-                    "well-known /opt locations — or pass one explicitly:\n"
+                    f"Error: no Skills directory found for agent: {agent_key}\n"
+                    "Tried its environment variable, home directory and the\n"
+                    "well-known fallback locations — or pass one explicitly:\n"
                     "  skillsync init --path /path/to/skills"
                 )
-            detected = detect_agent()
-            if detected is not None and detected.skills_dir == resolved:
-                agent = detected
+            skills_dir = agent.skills_dir
+        else:
+            # Resolution order: --path > --agent > env var > config file >
+            # auto-detect. Ambiguity is never resolved by guessing: several
+            # harnesses found means the user picks one.
+            resolved = load_skills_dir()
+            if resolved is None:
+                agents = find_agents()
+                if not agents:
+                    hints = search_skill_dirs()
+                    if hints:
+                        listing = "\n".join(f"  {hint}" for hint in hints)
+                        _die(
+                            "Error: could not find an Agent Skills directory.\n"
+                            "\n"
+                            "These directories look like Skills directories:\n"
+                            f"{listing}\n"
+                            "\n"
+                            "Pass one explicitly:\n"
+                            "  skillsync init --path /path/to/skills"
+                        )
+                    _die(
+                        "Error: could not find an Agent Skills directory.\n"
+                        "Tried the known harness locations (hermes, openclaw,\n"
+                        f"claude, codex) — or pass one explicitly:\n"
+                        "  skillsync init --path /path/to/skills"
+                    )
+                if len(agents) > 1:
+                    listing = "\n".join(
+                        f"  {a.key:<8} {a.name}: {_display_path(a.skills_dir)}"
+                        for a in agents
+                    )
+                    _die(
+                        "Error: several Agent Skills directories were found.\n"
+                        "\n"
+                        f"{listing}\n"
+                        "\n"
+                        "Pick one explicitly:\n"
+                        "  skillsync init --agent <key>\n"
+                        "  skillsync init --path /path/to/skills"
+                    )
+                agent = agents[0]
+                skills_dir = agent.skills_dir
             else:
-                agent = Agent(key="custom", name="Custom", skills_dir=resolved)
-            skills_dir = resolved
+                skills_dir = resolved
+                agent = label_agent(resolved)
 
         if not skills_dir.is_dir():
             _die(f"Error: Skills directory does not exist: {skills_dir}")
 
         typer.echo(f"{agent.name} Skills:")
         typer.echo(_display_path(skills_dir))
-        skills = list_skills(skills_dir)
+        skills = discover_skills(skills_dir)
         typer.echo()
         if skills:
             count = len(skills)
@@ -275,7 +331,7 @@ def status() -> None:
 @app.command()
 def diff(
     skill: Optional[str] = typer.Argument(
-        None, help="Skill name (default: all changed Skills)."
+        None, help="Skill path relative to the Skills directory, e.g. productivity/pdf (default: all changed Skills)."
     ),
 ) -> None:
     """Show what changed inside a Skill."""
@@ -328,7 +384,7 @@ def snapshot(
 @app.command("log")
 def log(
     skill: Optional[str] = typer.Argument(
-        None, help="Skill name (default: all Skills)."
+        None, help="Skill path relative to the Skills directory, e.g. productivity/pdf (default: all Skills)."
     ),
 ) -> None:
     """Show snapshot history."""
@@ -350,7 +406,9 @@ def log(
 
 @app.command()
 def restore(
-    skill: str = typer.Argument(..., help="Skill to restore."),
+    skill: str = typer.Argument(
+        ..., help="Skill path relative to the Skills directory, e.g. productivity/pdf."
+    ),
     commit_ref: Optional[str] = typer.Argument(
         None, help="Snapshot (git commit) to restore from."
     ),

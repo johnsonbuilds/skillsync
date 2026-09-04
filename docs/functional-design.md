@@ -30,80 +30,94 @@ SkillSync provides the Skill-aware layer.
 
 # 2. Supported Agent
 
-## MVP
+SkillSync is harness-agnostic. Each harness contributes only one thing:
+the candidates for its Skills directory, in priority order.
 
-Support **Hermes Agent only**.
+## Harness adapters
 
-The adapter should locate the Hermes Skill directory.
+| Agent | Candidates (priority order) |
+|---|---|
+| Hermes | `$HERMES_HOME/skills` → `~/.hermes/skills` → `/opt/.hermes/skills` → `/opt/data/.hermes/skills` → `/usr/local/.hermes/skills` |
+| OpenClaw | `$OPENCLAW_STATE_DIR/skills` → `~/.openclaw/skills` |
+| Claude Code | `~/.claude/skills` |
+| Codex | `~/.codex/skills` → `/etc/codex/skills` |
 
-Discovery uses the following priority:
+Adding a harness means adding one adapter entry.
+
+## Resolution priority
 
 ```text
 init --path (explicit)
+      ↓
+init --agent <key> (explicit harness choice)
       ↓
 $SKILLSYNC_SKILLS_DIR (SkillSync override)
       ↓
 last init (config file)
       ↓
-$HERMES_HOME/skills
+auto-detect across all harnesses
       ↓
-~/.hermes/skills
-      ↓
-/opt/.hermes/skills
-      ↓
-/opt/data/.hermes/skills
-      ↓
-/usr/local/.hermes/skills
-      ↓
-bounded search for "skills" directories (hint only, user must pass --path)
+bounded search for "skills" / "optional-skills" directories (hint only, user must pass --path)
 ```
+
+Auto-detect never guesses: when several harnesses are found, init lists
+them and exits, asking the user to pick one with `--agent` or `--path`.
 
 The search is depth-limited, skips hidden and dependency directories, and
 only ever presents candidates: SkillSync never picks a searched directory
 automatically.
 
-The implementation should isolate this path behind a simple Agent adapter so OpenClaw can be added later.
-
-No generalized plugin system is required for MVP.
+No generalized plugin system is required.
 
 ---
 
 # 3. Skill Model
 
-A Skill is a directory containing an Agent Skill.
+A Skill is a directory that **directly contains a `SKILL.md` file**, at any
+depth below the Skills directory.
 
-Example:
-
-```text
-browser-research/
-├── SKILL.md
-├── references/
-│   └── search.md
-└── scripts/
-    └── search.py
-```
-
-SkillSync treats the entire directory as one logical unit.
-
-For example:
+Flat layout:
 
 ```text
-browser-research
+skills/
+└── browser-research/
+    ├── SKILL.md
+    ├── references/
+    │   └── search.md
+    └── scripts/
+        └── search.py
 ```
 
-may contain:
+Category-nested layout:
 
 ```text
-SKILL.md
-references/search.md
-scripts/search.py
+skills/
+└── productivity/
+    └── pdf/
+        ├── SKILL.md
+        └── scripts/
+            └── run.py
 ```
 
-Changes to any of these files are reported as changes to:
+Discovery walks the tree; a directory containing `SKILL.md` is a Skill and
+is not descended into (nested `SKILL.md` files belong to that Skill's
+payload). Directories without `SKILL.md` — category docs, caches,
+dependency trees — are never Skills.
+
+A Skill is identified by its path relative to the Skills directory
+(e.g. `browser-research`, `productivity/pdf`). This identity is unique
+regardless of how the harness organizes its Skills directory, and doubles
+as the git pathspec for diff/log/restore.
+
+Changes to any file inside the Skill directory are reported as changes to
+its Skill identity:
 
 ```text
-browser-research
+ M  productivity/pdf
 ```
+
+Skills present in the last snapshot (HEAD) but deleted from the working
+tree are still grouped and reported as deleted.
 
 ---
 

@@ -219,3 +219,114 @@ def test_snapshot_without_message_uses_default(skills_dir):
     assert "Snapshot created:" in result.output
     subjects = [entry.subject for entry in git_log(skills_dir, limit=1)]
     assert subjects[0].startswith("SkillSync snapshot: ")
+
+
+# ---------------------------------------------------------------------------
+# nested (category / skill) layouts, e.g. Hermes-style Skills directories
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def nested_skills_dir(tmp_path, monkeypatch):
+    """A Hermes-style three-layer Skills directory: category / skill / files."""
+    d = tmp_path / "skills"
+    pdf = d / "productivity" / "pdf"
+    pdf.mkdir(parents=True)
+    (pdf / "SKILL.md").write_text("# PDF\n\nMerge pages.\n")
+    (pdf / "scripts").mkdir()
+    (pdf / "scripts" / "run.py").write_text("print('pdf')\n")
+    browser = d / "research" / "browser"
+    browser.mkdir(parents=True)
+    (browser / "SKILL.md").write_text("# Browser\n\nSearch well.\n")
+    # category docs and caches: never Skills
+    (d / "DESCRIPTION.md").write_text("category docs\n")
+    (d / "index-cache").mkdir()
+    (d / "index-cache" / "skills.json").write_text("{}\n")
+    monkeypatch.setenv("SKILLSYNC_SKILLS_DIR", str(d))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    return d
+
+
+def test_nested_layout_workflow(nested_skills_dir):
+    d = nested_skills_dir
+
+    # --- init counts real Skills, not categories ----------------------------
+    result = invoke("init")
+    assert result.exit_code == 0, result.output
+    assert "Found 2 skills." in result.output
+    assert "Initial snapshot created." in result.output
+
+    result = invoke("status")
+    assert "No changes." in result.output
+
+    # --- the Agent modifies one Skill inside a category ----------------------
+    (d / "productivity" / "pdf" / "SKILL.md").write_text("# PDF\n\nbroken merge\n")
+    (d / "productivity" / "pdf" / "scripts" / "extra.py").write_text("x = 1\n")
+
+    # --- status: Skill-level, not category-level ------------------------------
+    result = invoke("status")
+    assert result.exit_code == 0, result.output
+    assert " M  productivity/pdf" in result.output
+    # the category itself must never be reported as the changed unit
+    assert " M  productivity\n" not in result.output
+    assert " M  research\n" not in result.output
+    assert "1 skill changed" in result.output
+
+    # --- diff / log / restore accept the relative-path Skill ID ---------------
+    result = invoke("diff", "productivity/pdf")
+    assert result.exit_code == 0, result.output
+    assert "-Merge pages." in result.output
+    assert "+broken merge" in result.output
+    assert "new file: productivity/pdf/scripts/extra.py" in result.output
+
+    result = invoke("diff", "productivity")
+    assert result.exit_code == 1  # a category is not a Skill
+
+    result = invoke("log", "productivity/pdf")
+    assert "SkillSync initial snapshot" in result.output
+
+    # --- snapshot and restore the nested Skill --------------------------------
+    result = invoke("snapshot", "-m", "agent broke pdf")
+    assert result.exit_code == 0, result.output
+    assert "1 skill changed." in result.output
+
+    (d / "productivity" / "pdf" / "SKILL.md").write_text("# PDF\n\nworse\n")
+    (d / "productivity" / "pdf" / "junk.txt").write_text("junk\n")
+    result = invoke("restore", "productivity/pdf", "--yes")
+    assert result.exit_code == 0, result.output
+    assert "Restored productivity/pdf" in result.output
+    assert (d / "productivity" / "pdf" / "SKILL.md").read_text() == "# PDF\n\nbroken merge\n"
+    assert (d / "productivity" / "pdf" / "scripts" / "extra.py").exists()
+    assert not (d / "productivity" / "pdf" / "junk.txt").exists()
+
+    result = invoke("status")
+    assert "No changes." in result.output
+
+    # --- new and deleted Skills inside categories ------------------------------
+    newcli = d / "research" / "newcli"
+    newcli.mkdir()
+    (newcli / "SKILL.md").write_text("# New CLI\n")
+    shutil.rmtree(d / "research" / "browser")
+    # a file outside any Skill: noted, never swallowed
+    (d / "NOTES.md").write_text("loose file\n")
+
+    result = invoke("status")
+    assert " A  research/newcli" in result.output
+    assert " D  research/browser" in result.output
+    assert "2 skills changed" in result.output
+    assert "1 file(s) changed outside any Skill" in result.output
+
+    result = invoke("snapshot", "-m", "swap research skills")
+    assert result.exit_code == 0, result.output
+    result = invoke("status")
+    assert "No changes." in result.output
+
+
+def test_nested_layout_diff_new_file(nested_skills_dir):
+    d = nested_skills_dir
+    invoke("init")
+    (d / "productivity" / "timer").mkdir(parents=True)
+    (d / "productivity" / "timer" / "SKILL.md").write_text("# Timer\n")
+    result = invoke("diff", "productivity/timer")
+    assert result.exit_code == 0, result.output
+    assert "new file: productivity/timer/SKILL.md" in result.output

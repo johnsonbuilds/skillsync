@@ -136,7 +136,9 @@ skillsync restore browser-research a83f91c
 
 ## Quick Start
 
-> SkillSync is currently an early MVP. Hermes Agent is the first supported Agent environment.
+> SkillSync is currently an early MVP. It auto-detects Hermes, OpenClaw,
+> Claude Code and Codex Skills directories; any other directory works via
+> `--path`.
 
 ### Install
 
@@ -306,14 +308,27 @@ The project focuses on one problem:
 
 ## Supported Agents
 
-### Currently
+SkillSync is harness-agnostic: it versions **any** directory of Skills.
+Built-in adapters locate each harness's Skills directory:
 
-* [x] Hermes Agent
-* [ ] OpenClaw
+| Agent | Skills directory (priority order) |
+|---|---|
+| Hermes Agent | `$HERMES_HOME/skills` → `~/.hermes/skills` → `/opt/.hermes/skills` → `/opt/data/.hermes/skills` → `/usr/local/.hermes/skills` |
+| OpenClaw | `$OPENCLAW_STATE_DIR/skills` → `~/.openclaw/skills` |
+| Claude Code | `~/.claude/skills` |
+| Codex | `~/.codex/skills` → `/etc/codex/skills` |
 
-OpenClaw support is planned after the initial Hermes validation.
+Any other directory works with `skillsync init --path`.
 
-The architecture should remain simple and Agent-agnostic.
+Skills are discovered by the same rule everywhere: **a directory that
+directly contains a `SKILL.md` file**, at any depth. A Skill is identified
+by its path relative to the Skills directory — for example
+`browser-research` in a flat layout, or `productivity/pdf` when the
+harness groups Skills into categories. Flat and nested layouts work
+equally well.
+
+When several harnesses are detected, `init` lists the candidates and asks
+you to pick one with `--agent <key>` or `--path` — it never guesses.
 
 ---
 
@@ -346,8 +361,9 @@ The priority is real-world usage over feature completeness.
 ### MVP
 
 * [x] Product definition
-* [x] Hermes Skill detection
-* [x] `skillsync init`
+* [x] Skills-directory adapters (Hermes, OpenClaw, Claude Code, Codex)
+* [x] Layout-agnostic Skill discovery (flat and category-nested)
+* [x] `skillsync init` (with `--path` / `--agent` selection)
 * [x] Skill-level `status`
 * [x] Skill-aware `diff`
 * [x] `snapshot`
@@ -358,7 +374,6 @@ The priority is real-world usage over feature completeness.
 
 Potential future work includes:
 
-* OpenClaw support
 * GitHub remote synchronization
 * Multi-machine recovery
 * Better CLI UX
