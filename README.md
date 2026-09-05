@@ -159,6 +159,18 @@ On Debian/Ubuntu the installer installs `python3-venv` automatically (directly a
 root, otherwise via `sudo`) when venv creation fails. Set `SKILLSYNC_NO_AUTOINSTALL=1`
 to skip that and install the package by hand.
 
+Windows (native, PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/johnsonbuilds/skillsync/main/install.ps1 | iex
+```
+
+Windows PowerShell 5.1: `iwr <same url> -UseBasicParsing | iex`. Requires Python 3.12+
+and Git (the installer tells you the exact `winget` command when either is missing).
+It drops a `skillsync.cmd` shim into `%USERPROFILE%\.local\bin` and adds that directory
+to your user PATH — open a new terminal so it takes effect. WSL users can use the
+Unix one-liner above instead.
+
 Or install from a local checkout:
 
 ```bash
