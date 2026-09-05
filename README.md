@@ -1,5 +1,7 @@
 # SkillSync
 
+**English** | [简体中文](./README.zh-CN.md)
+
 > Git-based version control for Agent Skills.
 
 AI Agents are becoming capable of creating and modifying their own Skills.
