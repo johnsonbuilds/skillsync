@@ -155,6 +155,10 @@ One-line install (creates an isolated venv and exposes the `skillsync` command):
 curl -fsSL https://raw.githubusercontent.com/johnsonbuilds/skillsync/main/install.sh | sh
 ```
 
+On Debian/Ubuntu the installer installs `python3-venv` automatically (directly as
+root, otherwise via `sudo`) when venv creation fails. Set `SKILLSYNC_NO_AUTOINSTALL=1`
+to skip that and install the package by hand.
+
 Or install from a local checkout:
 
 ```bash
