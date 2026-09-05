@@ -229,7 +229,12 @@ def restore_skill(repo: Path, skill: str, target: str) -> str | None:
     # 3. Check the skill out from the target revision.
     if ls_tree(repo, target, skill):
         git("checkout", target, "--", skill, cwd=repo)
-    # 4. Record the restore as a new commit so history is preserved.
+    # 4. Record the restore as a new commit so history is preserved. Nothing
+    #    to record when the skill now matches HEAD again — e.g. restoring a
+    #    skill with uncommitted changes to HEAD just discards them. Detected
+    #    from repository state, never from localized git output.
+    if not status_porcelain(repo, skill):
+        return None
     return commit(repo, f"SkillSync restore: {skill} to {target[:7]}", skill)
 
 

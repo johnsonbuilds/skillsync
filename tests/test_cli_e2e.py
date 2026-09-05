@@ -330,3 +330,38 @@ def test_nested_layout_diff_new_file(nested_skills_dir):
     result = invoke("diff", "productivity/timer")
     assert result.exit_code == 0, result.output
     assert "new file: productivity/timer/SKILL.md" in result.output
+
+
+def test_restore_dirty_skill_discards_changes_without_new_commit(skills_dir):
+    """Regression (zh_CN git): restore with uncommitted changes discards them
+    and must never attempt an empty commit — detected from repository state,
+    not from localized git output."""
+    invoke("init")
+    before = len(git_log(skills_dir))
+
+    (skills_dir / "browser-research" / "SKILL.md").write_text("# my manual edit\n")
+    result = invoke("restore", "browser-research", "--yes")
+    assert result.exit_code == 0, result.output
+    assert "Restored browser-research" in result.output
+    assert "Restore snapshot created" not in result.output
+
+    # changes discarded: worktree is back at HEAD, history untouched
+    assert (skills_dir / "browser-research" / "SKILL.md").read_text() == (
+        "# Browser Research\n\nSearch well.\n"
+    )
+    assert len(git_log(skills_dir)) == before
+    assert "No changes." in invoke("status").output
+
+
+def test_restore_noop_when_target_matches_current(skills_dir):
+    """Restoring to content identical to HEAD succeeds without inventing a
+    snapshot commit."""
+    invoke("init")
+    head = git_log(skills_dir, limit=1)[0].hash
+    before = len(git_log(skills_dir))
+
+    result = invoke("restore", "browser-research", head, "--yes")
+    assert result.exit_code == 0, result.output
+    assert "Restore snapshot created" not in result.output
+    assert len(git_log(skills_dir)) == before
+    assert "No changes." in invoke("status").output
