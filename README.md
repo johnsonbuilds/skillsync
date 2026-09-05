@@ -150,6 +150,14 @@ One-line install (creates an isolated venv and exposes the `skillsync` command):
 curl -fsSL https://raw.githubusercontent.com/johnsonbuilds/skillsync/main/install.sh | sh
 ```
 
+If `~/.local/bin` is not on your PATH, the installer detects your current shell
+(`bash`/`zsh`/`fish`/`pwsh`, via its parent process, then `$SHELL`) and prints a
+copy-paste command for that exact shell — including `source` for bash/zsh, and
+`fish_add_path` for fish (which needs no `source`). On macOS it points bash at
+`~/.bash_profile` instead of `~/.bashrc`. Detection can be forced with
+`SKILLSYNC_SHELL=bash|zsh|fish|pwsh`, and when detection fails the installer
+says so instead of guessing.
+
 Or install from a local checkout:
 
 ```bash
