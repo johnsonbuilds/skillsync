@@ -161,21 +161,25 @@ def ensure_identity(repo: Path) -> None:
 def commit(repo: Path, message: str, *pathspecs: str) -> str | None:
     """Commit staged (or pathspec-scoped) changes.
 
-    Returns the short hash of the new commit, or None when there was nothing
-    to commit. Raises GitError on unexpected failures.
+    Returns the short hash of the new commit, or None when there is nothing
+    to commit. The no-op case is detected from repository state (exit codes
+    of ``git diff`` probes), never from localized git output, so callers
+    behave identically on any locale. Raises GitError on unexpected
+    failures.
     """
     ensure_identity(repo)
+    # A full commit is empty when nothing is staged; a pathspec-scoped
+    # commit is empty when index+worktree match HEAD for those paths.
+    if pathspecs:
+        empty = try_git("diff", "--quiet", "HEAD", "--", *pathspecs, cwd=repo)
+    else:
+        empty = try_git("diff", "--cached", "--quiet", cwd=repo)
+    if empty:
+        return None
     args = ["commit", "-m", message]
     if pathspecs:
         args += ["--", *pathspecs]
-    proc = subprocess.run(
-        ["git", *args], cwd=str(repo), capture_output=True, text=True
-    )
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout).strip()
-        if "nothing to commit" in err.lower():
-            return None
-        raise GitError(err or "git commit failed")
+    git(*args, cwd=repo)
     return git("rev-parse", "--short", "HEAD", cwd=repo).strip()
 
 
