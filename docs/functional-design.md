@@ -738,6 +738,12 @@ network failure must never change local state.
            success              → push, "Pulled N, pushed M"
            conflict             → 21.4
 6. push rejected (remote raced) → "run skillsync sync again"; nothing changed
+
+Each pulled/pushed count is followed by the touched Skill names, capped at
+three ("Pulled 1 new snapshot (browser-research).", "Pushed 1 snapshot
+(agent-memory, browser-research, github-pr, +1 more).", "Pulled 1 (a),
+pushed 1 (b)."). Changes outside every Skill root are not named; the
+parenthesis is omitted when no Skill was touched.
 ```
 
 Pulls and pushes are plain git operations; SkillSync never rewrites the

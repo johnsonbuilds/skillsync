@@ -116,6 +116,16 @@ def group_by_skill(
     return grouped
 
 
+def skill_roots_at(skills_dir: Path, ref: str) -> set[str]:
+    """Skill roots present in commit ``ref`` (directories with SKILL.md)."""
+    roots = {
+        path.rsplit("/", 1)[0]
+        for path in git.ls_tree(skills_dir, ref)
+        if "/" in path and path.rsplit("/", 1)[1] == SKILL_MARKER
+    }
+    return normalize_roots(roots)
+
+
 def head_skill_roots(skills_dir: Path) -> set[str]:
     """Skill roots present in the last snapshot (HEAD).
 
@@ -123,15 +133,22 @@ def head_skill_roots(skills_dir: Path) -> set[str]:
     that Skills deleted from the working tree still group correctly. Empty
     when the repository has no commits yet.
     """
-    if not git.has_commits(skills_dir):
-        return set()
-    paths = git.ls_tree(skills_dir, "HEAD")
-    roots = {
-        path.rsplit("/", 1)[0]
-        for path in paths
-        if "/" in path and path.rsplit("/", 1)[1] == SKILL_MARKER
-    }
-    return normalize_roots(roots)
+    return skill_roots_at(skills_dir, "HEAD")
+
+
+def changed_skills(skills_dir: Path, base: str, head: str) -> list[str]:
+    """Sorted Skill identities touched by the commits between base and head.
+
+    Skill roots are collected from both endpoint trees, so Skills added or
+    deleted inside the range still group correctly; changed paths outside
+    every Skill root (e.g. a root-level README) are ignored.
+    """
+    out = git.git("diff", "--name-only", f"{base}..{head}", cwd=skills_dir, check=False)
+    paths = [line for line in out.splitlines() if line]
+    if not paths:
+        return []
+    roots = skill_roots_at(skills_dir, base) | skill_roots_at(skills_dir, head)
+    return sorted(group_by_skill(paths, roots))
 
 
 @dataclass

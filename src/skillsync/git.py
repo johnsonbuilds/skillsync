@@ -83,6 +83,12 @@ def rev_parse(repo: Path, ref: str) -> str | None:
     return out.strip() or None
 
 
+def merge_base(repo: Path, a: str, b: str) -> str | None:
+    """Common ancestor commit of two refs, or None when they diverge."""
+    out = git("merge-base", a, b, cwd=repo, check=False)
+    return out.strip() or None
+
+
 @dataclass(frozen=True)
 class StatusEntry:
     """One line of ``git status --porcelain``."""

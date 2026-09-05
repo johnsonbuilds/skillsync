@@ -43,6 +43,7 @@ from .agent import (
 from .skills import (
     SkillChange,
     aggregate_changes,
+    changed_skills,
     discover_skills,
     group_by_skill,
     head_skill_roots,
@@ -716,6 +717,20 @@ def _handle_conflict(skills_dir: Path, branch: str, use_remote: bool) -> None:
     raise typer.Exit(1)
 
 
+def _fmt_touched(names: list[str], limit: int = 3) -> str:
+    """Output suffix naming the Skills touched by a sync, e.g. `` (a, b, +1 more)``.
+
+    Empty when no Skill was touched (changes outside every Skill root), so
+    the existing single-line sync output stays intact.
+    """
+    if not names:
+        return ""
+    shown = names[:limit]
+    extra = len(names) - len(shown)
+    label = ", ".join(shown) + (f", +{extra} more" if extra > 0 else "")
+    return f" ({label})"
+
+
 @app.command()
 def sync(
     use_remote: bool = typer.Option(
@@ -774,21 +789,40 @@ def sync(
             typer.echo("Everything up to date.")
             return
         if behind > 0 and ahead == 0:
+            old_head = git.rev_parse(skills_dir, "HEAD")
+            pulled = (
+                changed_skills(skills_dir, old_head, remote_ref) if old_head else []
+            )
             git.merge_ff_only(skills_dir, remote_ref)
-            typer.echo(f"Pulled {behind} new snapshot{'s' if behind != 1 else ''}.")
+            typer.echo(
+                f"Pulled {behind} new snapshot{'s' if behind != 1 else ''}"
+                f"{_fmt_touched(pulled)}."
+            )
             return
         if behind == 0:
+            pushed = changed_skills(skills_dir, remote_ref, "HEAD")
             ok, err = git.push(skills_dir, branch)
             _handle_push_result(ok, err)
-            typer.echo(f"Pushed {ahead} snapshot{'s' if ahead != 1 else ''}.")
+            typer.echo(
+                f"Pushed {ahead} snapshot{'s' if ahead != 1 else ''}"
+                f"{_fmt_touched(pushed)}."
+            )
             return
 
         # 4. Diverged: replay local snapshots on top of the remote.
+        #    Both sides are resolved against the shared ancestor before the
+        #    rebase rewrites local commit hashes.
+        base = git.merge_base(skills_dir, branch, remote_ref)
+        pulled = changed_skills(skills_dir, base, remote_ref) if base else []
+        pushed = changed_skills(skills_dir, base, "HEAD") if base else []
         result = git.rebase(skills_dir, remote_ref)
         if result.ok:
             ok, err = git.push(skills_dir, branch)
             _handle_push_result(ok, err)
-            typer.echo(f"Pulled {behind}, pushed {ahead}.")
+            typer.echo(
+                f"Pulled {behind}{_fmt_touched(pulled)}, "
+                f"pushed {ahead}{_fmt_touched(pushed)}."
+            )
             return
 
         _handle_conflict(skills_dir, branch, use_remote)

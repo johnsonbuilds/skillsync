@@ -336,3 +336,97 @@ def test_clone_rejects_non_empty_target(
     assert result.exit_code == 1, result.output
     assert "not empty" in result.output
     assert (occupied / "keep.txt").read_text() == "precious\n"
+
+
+# ---------------------------------------------------------------------------
+# sync output: touched-Skill names (v0.3.1)
+# ---------------------------------------------------------------------------
+
+
+def test_sync_push_names_flat_and_non_skill_changes(machine_a, monkeypatch, tmp_path):
+    machine_a.use(monkeypatch)
+    setup_skill_dir(machine_a)
+    url = make_bare_remote(tmp_path)
+    assert invoke("remote", "add", url).exit_code == 0
+
+    write_skill(machine_a.skills_dir, "github-pr", "# GitHub PR\n\nUpdated.\n")
+    result = invoke("sync")
+    assert result.exit_code == 0, result.output
+    assert "Pushed 1 snapshot (github-pr)." in result.output
+
+    # Changes outside every Skill root stay invisible in the names.
+    (machine_a.skills_dir / "NOTES.md").write_text("scratch\n")
+    result = invoke("sync")
+    assert result.exit_code == 0, result.output
+    assert "Pushed 1 snapshot." in result.output
+
+
+def test_sync_pull_names_fast_forward(machine_a, machine_b, monkeypatch, tmp_path):
+    machine_a.use(monkeypatch)
+    setup_skill_dir(machine_a)
+    url = make_bare_remote(tmp_path)
+    assert invoke("remote", "add", url).exit_code == 0
+    write_skill(machine_a.skills_dir, "browser-research", "# Browser Research v2\n")
+    assert invoke("sync").exit_code == 0
+
+    machine_b.use(monkeypatch)
+    assert invoke("clone", url, str(machine_b.skills_dir)).exit_code == 0
+
+    machine_a.use(monkeypatch)
+    write_skill(machine_a.skills_dir, "github-pr", "# GitHub PR v2\n")
+    assert invoke("sync").exit_code == 0  # machine A pushes one more
+
+    machine_b.use(monkeypatch)
+    result = invoke("sync")
+    assert result.exit_code == 0, result.output
+    assert "Pulled 1 new snapshot (github-pr)." in result.output
+
+
+def test_sync_diverged_names_both_sides(machine_a, machine_b, monkeypatch, tmp_path):
+    machine_a.use(monkeypatch)
+    setup_skill_dir(machine_a)
+    url = make_bare_remote(tmp_path)
+    assert invoke("remote", "add", url).exit_code == 0
+
+    machine_b.use(monkeypatch)
+    assert invoke("clone", url, str(machine_b.skills_dir)).exit_code == 0
+
+    # A changes browser-research and pushes; B changes github-pr and syncs:
+    # diverged -> rebase -> one pulled, one pushed, both named.
+    machine_a.use(monkeypatch)
+    write_skill(machine_a.skills_dir, "browser-research", "# Browser Research v2\n")
+    assert invoke("sync").exit_code == 0
+
+    machine_b.use(monkeypatch)
+    write_skill(machine_b.skills_dir, "github-pr", "# GitHub PR v2\n")
+    result = invoke("sync")
+    assert result.exit_code == 0, result.output
+    assert "Pulled 1 (browser-research), pushed 1 (github-pr)." in result.output
+
+
+def test_sync_names_cap_and_nested_skills(machine_a, monkeypatch, tmp_path):
+    machine_a.use(monkeypatch)
+    # Two flat Skills plus one nested under a category directory.
+    write_skill(machine_a.skills_dir, "browser-research", "# Browser Research\n")
+    write_skill(machine_a.skills_dir, "github-pr", "# GitHub PR\n")
+    nested = machine_a.skills_dir / "optional-skills" / "mlops"
+    write_skill(nested, "trainer", "# Trainer\n")
+    assert invoke("init").exit_code == 0
+    url = make_bare_remote(tmp_path)
+    assert invoke("remote", "add", url).exit_code == 0
+
+    write_skill(machine_a.skills_dir, "browser-research", "# Browser Research v2\n")
+    write_skill(machine_a.skills_dir, "github-pr", "# GitHub PR v2\n")
+    write_skill(nested, "trainer", "# Trainer v2\n")
+    result = invoke("sync")
+    assert result.exit_code == 0, result.output
+    assert (
+        "Pushed 1 snapshot (browser-research, github-pr, "
+        "optional-skills/mlops/trainer)." in result.output
+    )
+
+    # A later sync shows the nested Skill's full identity on its own.
+    write_skill(nested, "trainer", "# Trainer v3\n")
+    result = invoke("sync")
+    assert result.exit_code == 0, result.output
+    assert "Pushed 1 snapshot (optional-skills/mlops/trainer)." in result.output
