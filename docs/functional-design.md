@@ -698,3 +698,89 @@ Avoid:
 The first implementation should be small enough that a developer can inspect the entire codebase and understand how SkillSync works.
 
 The product should earn the right to become more complex only after real usage validates the core workflow.
+
+---
+
+# 21. Addendum — Remote Synchronization (v0.3)
+
+## 21.1 Scope
+
+One workflow: **back up local snapshots to a private GitHub repository and
+keep two or more machines in step.** Everything else (auto repo creation,
+merge strategies, branch management) is out of scope.
+
+The remote is optional. Every local command keeps working offline, and a
+network failure must never change local state.
+
+## 21.2 Commands
+
+| Command | Behavior |
+|---|---|
+| `remote add <url>` | Validate the URL with `git ls-remote` first (nothing is written on failure). Require an initialized repository with at least one snapshot. Refuse a second remote. On a fresh remote, push the local history as the initial backup. If the remote already holds **unrelated history**, roll the remote configuration back and explain `clone` as the alternative. |
+| `remote` / `remote remove` | Show or forget `origin` (local config only; GitHub is untouched). |
+| `clone <url> <path>` | Set up a machine from an existing repository: `git clone`, register the Skills directory, report the number of Skills found. Target must not exist or be empty. |
+| `sync [--use-remote]` | The daily verb — see 21.3. |
+| `status` (enhanced) | When a remote is configured, append `Remote:` and `Remote state:` lines. Fetch uses a 10 s budget; failure degrades to `unknown (offline)`, never an error. |
+
+## 21.3 The `sync` algorithm
+
+```text
+1. Working tree dirty?          → automatic "Pre-sync snapshot: <date>"
+                                  (remote work is never mixed with unsaved state)
+2. fetch origin                 → unreachable: die; local state untouched
+3. remote branch missing?       → push -u (initial backup) and stop
+4. unrelated histories?         → die with guidance (clone or empty remote)
+5. ahead / behind:
+     equal                      → "Everything up to date."
+     behind only                → merge --ff-only, report pulled count
+     ahead only                 → push, report pushed count
+     diverged                   → rebase (replay local snapshots onto remote)
+           success              → push, "Pulled N, pushed M"
+           conflict             → 21.4
+6. push rejected (remote raced) → "run skillsync sync again"; nothing changed
+```
+
+Pulls and pushes are plain git operations; SkillSync never rewrites the
+remote and never force-pushes.
+
+## 21.4 Conflict policy
+
+When the same Skill changed on both sides, `sync` aborts the rebase
+(`git rebase --abort`) and restores the exact pre-sync state, then reports:
+
+* the conflicting **Skills** (file paths grouped via the Skill model), plus
+  any conflicted files outside any Skill;
+* the two available choices:
+  * adopt the remote version: `sync --use-remote`
+    (aborts the rebase, `git reset --hard origin/main`; the abandoned local
+    snapshots remain recoverable and their starting hash is printed);
+  * keep the local version: manual `git push --force-with-lease`
+    (SkillSync refuses to do this itself).
+
+Automatic winner-picking is deliberately excluded: silently discarding one
+side's work is unacceptable in a backup tool. Different Skills merging
+cleanly is the common case and stays fully automatic.
+
+## 21.5 Safety rules
+
+* Never force-push; there is no force wrapper in the git layer at all.
+* All network commands run with `GIT_TERMINAL_PROMPT=0` and subprocess
+  timeouts (fetch 10 s, push 120 s, clone 300 s, ls-remote 15 s) so an
+  unreachable remote fails cleanly instead of hanging.
+* `remote add` refuses repositories without snapshots: an uninitialized
+  directory must not silently "reserve" a remote that another machine's
+  initial backup would then miss.
+* Every push path reminds the user: keep the repository **private**, and
+  audit Skills for plaintext API keys.
+* Authentication is git's own (gh credential helper, SSH keys, tokens);
+  SkillSync adds none.
+
+## 21.6 Testing
+
+GitHub is simulated with a local bare repository over `file://`, which
+exercises the real git transport. Covered: URL validation failure, initial
+backup, second-remote refusal, unrelated-history rollback, remote remove,
+`remote` display, pre-sync snapshot, two-machine round-trip (clone, edit,
+push, pull), conflict abort and `--use-remote` recovery, offline `sync`
+(local state intact) and offline `status` (degrades gracefully), clone into
+a non-empty target.

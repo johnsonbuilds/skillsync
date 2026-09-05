@@ -3,17 +3,37 @@
 SkillSync implements no version control logic of its own: every operation is
 delegated to git via subprocess. This module is the only place that talks to
 git directly.
+
+Remote operations (fetch, push, clone) run with terminal prompts disabled
+and a subprocess timeout, so an unreachable remote fails cleanly instead of
+hanging. SkillSync never force-pushes: there is deliberately no wrapper for
+``git push --force``.
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+REMOTE_NAME = "origin"
+
+# Network operation budgets (seconds). Generous for pushes/clones, tight for
+# the fetch used by `status` — a version-control command must never hang.
+LS_REMOTE_TIMEOUT = 15
+FETCH_TIMEOUT = 10
+PUSH_TIMEOUT = 120
+CLONE_TIMEOUT = 300
+
 
 class GitError(RuntimeError):
     """Raised when a git command fails."""
+
+
+def _net_env() -> dict[str, str]:
+    """Environment for network commands: never prompt for credentials."""
+    return {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
 
 
 def git(*args: str, cwd: Path, check: bool = True) -> str:
@@ -205,3 +225,162 @@ def restore_skill(repo: Path, skill: str, target: str) -> str | None:
         git("checkout", target, "--", skill, cwd=repo)
     # 4. Record the restore as a new commit so history is preserved.
     return commit(repo, f"SkillSync restore: {skill} to {target[:7]}", skill)
+
+
+# ---------------------------------------------------------------------------
+# remote operations
+#
+# SkillSync's remote layer is intentionally thin: it configures git's own
+# remote (always named ``origin``) and wraps the four network verbs with
+# timeouts and non-interactive credentials. Conflict resolution policy lives
+# in the CLI layer, not here.
+# ---------------------------------------------------------------------------
+
+
+def _net(args: list[str], cwd: Path | None, timeout: int) -> str:
+    """Run a network git command with prompts disabled and a timeout."""
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=str(cwd) if cwd else None,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=_net_env(),
+        )
+    except subprocess.TimeoutExpired:
+        raise GitError(
+            f"git {' '.join(args[:2])} timed out after {timeout}s "
+            "(remote unreachable?)"
+        )
+    if proc.returncode != 0:
+        message = (proc.stderr or proc.stdout).strip()
+        raise GitError(message or f"git {' '.join(args[:2])} failed")
+    return proc.stdout
+
+
+def remote_url(repo: Path) -> str | None:
+    """The configured remote URL, or None when no remote is set up."""
+    proc = subprocess.run(
+        ["git", "remote", "get-url", REMOTE_NAME],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def remote_add(repo: Path, url: str) -> None:
+    git("remote", "add", REMOTE_NAME, url, cwd=repo)
+
+
+def remote_remove(repo: Path) -> None:
+    git("remote", "remove", REMOTE_NAME, cwd=repo)
+
+
+def url_is_reachable(url: str) -> bool:
+    """True when git can talk to ``url`` at all (auth and network included)."""
+    try:
+        _net(["ls-remote", "--heads", url], cwd=None, timeout=LS_REMOTE_TIMEOUT)
+    except GitError:
+        return False
+    return True
+
+
+def fetch(repo: Path) -> None:
+    """Update remote-tracking refs; raises GitError when unreachable."""
+    _net(["fetch", "--quiet", REMOTE_NAME], cwd=repo, timeout=FETCH_TIMEOUT)
+
+
+def current_branch(repo: Path) -> str:
+    out = git("rev-parse", "--abbrev-ref", "HEAD", cwd=repo)
+    return out.strip()
+
+
+def remote_branch(repo: Path, branch: str) -> str | None:
+    """Full hash of ``origin/<branch>``, or None when the remote has none."""
+    return rev_parse(repo, f"{REMOTE_NAME}/{branch}")
+
+
+def has_merge_base(repo: Path, a: str, b: str) -> bool:
+    """False when two refs share no history (unrelated histories)."""
+    return try_git("merge-base", a, b, cwd=repo)
+
+
+def ahead_behind(repo: Path, branch: str) -> tuple[int, int] | None:
+    """(ahead, behind) of ``origin/<branch>``, or None when not comparable."""
+    out = git(
+        "rev-list", "--left-right", "--count",
+        f"{branch}...{REMOTE_NAME}/{branch}",
+        cwd=repo, check=False,
+    )
+    parts = out.split()
+    if len(parts) != 2:
+        return None
+    return int(parts[0]), int(parts[1])
+
+
+def merge_ff_only(repo: Path, ref: str) -> None:
+    git("merge", "--ff-only", ref, cwd=repo)
+
+
+@dataclass(frozen=True)
+class RebaseResult:
+    ok: bool
+    detail: str  # stderr on failure
+
+
+def rebase(repo: Path, ref: str) -> RebaseResult:
+    """Replay local commits onto ``ref``. Never aborts on its own."""
+    proc = subprocess.run(
+        ["git", "rebase", ref],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode == 0:
+        return RebaseResult(ok=True, detail="")
+    return RebaseResult(ok=False, detail=(proc.stderr or proc.stdout).strip())
+
+
+def conflicted_paths(repo: Path) -> list[str]:
+    """Paths with unresolved conflicts (valid only mid-conflict)."""
+    out = git(
+        "diff", "--name-only", "--diff-filter=U", cwd=repo, check=False
+    )
+    return [line for line in out.splitlines() if line]
+
+
+def rebase_abort(repo: Path) -> None:
+    """Best-effort rebase abort: restore the exact pre-rebase state."""
+    try:
+        git("rebase", "--abort", cwd=repo)
+    except GitError:
+        pass
+
+
+def push(repo: Path, branch: str) -> tuple[bool, str]:
+    """Push ``branch`` to origin and set upstream.
+
+    Returns (True, "") on success. Never force-pushes; a rejected
+    non-fast-forward returns (False, stderr) so the caller can explain it.
+    """
+    try:
+        _net(
+            ["push", "-u", REMOTE_NAME, branch],
+            cwd=repo,
+            timeout=PUSH_TIMEOUT,
+        )
+    except GitError as exc:
+        return False, str(exc)
+    return True, ""
+
+
+def reset_hard(repo: Path, ref: str) -> None:
+    git("reset", "--hard", ref, cwd=repo)
+
+
+def clone(url: str, path: Path) -> None:
+    _net(["clone", "--quiet", url, str(path)], cwd=None, timeout=CLONE_TIMEOUT)

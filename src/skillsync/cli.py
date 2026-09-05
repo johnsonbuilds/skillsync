@@ -1,6 +1,6 @@
 """SkillSync command line interface.
 
-Six commands, exactly the MVP surface:
+Local version control:
 
     skillsync init
     skillsync status
@@ -8,6 +8,15 @@ Six commands, exactly the MVP surface:
     skillsync snapshot [-m "message"]
     skillsync log [skill]
     skillsync restore <skill> [commit]
+
+Remote synchronization (GitHub or any git remote):
+
+    skillsync remote [add <url> | remove]
+    skillsync clone <url> <path>
+    skillsync sync [--use-remote]
+
+SkillSync never force-pushes, and network failures never change local
+state: when `sync` cannot reach the remote, local snapshots are untouched.
 """
 
 from __future__ import annotations
@@ -44,6 +53,8 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+remote_app = typer.Typer(invoke_without_command=True)
+app.add_typer(remote_app, name="remote", help="Manage the GitHub remote.")
 
 
 def _version_callback(value: bool) -> None:
@@ -198,6 +209,79 @@ def _print_skill_diff(skills_dir: Path, skill: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# remote helpers
+# ---------------------------------------------------------------------------
+
+
+def _require_remote(skills_dir: Path) -> str:
+    """The configured remote URL, or a clean error explaining how to set up."""
+    url = git.remote_url(skills_dir)
+    if url is None:
+        _die(
+            "Error: no remote is configured.\n"
+            "Set one up first:\n"
+            "  skillsync remote add <url>\n"
+            "  (e.g. git@github.com:you/skills.git)"
+        )
+    return url
+
+
+def _remote_state(skills_dir: Path) -> str:
+    """One-line remote state. Never raises: offline degrades gracefully."""
+    try:
+        git.fetch(skills_dir)
+    except git.GitError:
+        return "unknown (offline)"
+    branch = git.current_branch(skills_dir)
+    remote_ref = f"{git.REMOTE_NAME}/{branch}"
+    if git.remote_branch(skills_dir, branch) is None:
+        return "nothing on the remote yet (run: skillsync sync)"
+    if not git.has_merge_base(skills_dir, branch, remote_ref):
+        return "unrelated histories (manual setup required)"
+    counts = git.ahead_behind(skills_dir, branch)
+    if counts is None:
+        return "unknown"
+    ahead, behind = counts
+    if ahead == 0 and behind == 0:
+        return "up to date"
+    if ahead and behind:
+        return f"diverged ({ahead} local, {behind} remote) — run: skillsync sync"
+    if ahead:
+        return f"ahead {ahead} — run: skillsync sync"
+    return f"behind {behind} — run: skillsync sync"
+
+
+def _append_remote_status(skills_dir: Path) -> None:
+    """Extra `status` lines shown only when a remote is configured."""
+    url = git.remote_url(skills_dir)
+    if url is None:
+        return
+    typer.echo()
+    typer.echo(f"Remote: {url}")
+    typer.echo(f"Remote state: {_remote_state(skills_dir)}")
+
+
+def _print_private_reminder() -> None:
+    typer.secho(
+        "\nReminder: use a PRIVATE repository, and make sure no Skill\n"
+        "contains plaintext API keys — Skills directories often do.",
+        fg=typer.colors.YELLOW,
+    )
+
+
+def _handle_push_result(ok: bool, err: str) -> None:
+    """Explain a rejected push in plain words; never suggest force-pushing."""
+    if ok:
+        return
+    if "[rejected]" in err or "non-fast-forward" in err:
+        _die(
+            "Error: the remote moved while syncing (another machine pushed).\n"
+            "Nothing was changed — run `skillsync sync` again."
+        )
+    _die(f"Error: push failed:\n{err}")
+
+
+# ---------------------------------------------------------------------------
 # commands
 # ---------------------------------------------------------------------------
 
@@ -326,6 +410,7 @@ def status() -> None:
         skills_dir = _skills_dir()
         changes, root_files = _skill_changes(skills_dir)
         _print_status(changes, root_files)
+        _append_remote_status(skills_dir)
 
 
 @app.command()
@@ -451,6 +536,262 @@ def restore(
         typer.echo(f"Restored {skill} to commit {short}.")
         if restored:
             typer.echo(f"Restore snapshot created: {restored} (history preserved).")
+
+
+# ---------------------------------------------------------------------------
+# remote commands
+# ---------------------------------------------------------------------------
+
+
+@remote_app.callback(invoke_without_command=True)
+def remote_show(ctx: typer.Context) -> None:
+    """Show the configured remote (or manage it with add/remove)."""
+    if ctx.invoked_subcommand is not None:
+        return
+    with git_errors():
+        skills_dir = _skills_dir()
+        url = git.remote_url(skills_dir)
+        if url is None:
+            typer.echo("No remote configured.")
+            typer.echo("Set one up:  skillsync remote add <url>")
+            return
+        typer.echo(f"Remote: {url}")
+        typer.echo(f"Remote state: {_remote_state(skills_dir)}")
+
+
+@remote_app.command("add")
+def remote_add(
+    url: str = typer.Argument(
+        ..., help="Git remote URL, e.g. git@github.com:you/skills.git."
+    ),
+) -> None:
+    """Connect this Skills repository to a (private!) remote repository.
+
+    The URL is validated before anything is written. On a fresh remote the
+    local snapshots are pushed right away as the initial backup.
+    """
+    _require_git()
+    with git_errors():
+        skills_dir = _skills_dir()
+        if git.remote_url(skills_dir) is not None:
+            _die(
+                "Error: a remote is already configured.\n"
+                "Replace it first:  skillsync remote remove"
+            )
+        if not git.url_is_reachable(url):
+            _die(
+                f"Error: could not reach: {url}\n"
+                "Check the URL and your credentials "
+                "(gh auth login, SSH key, or token).\n"
+                "Nothing was changed."
+            )
+        git.remote_add(skills_dir, url)
+        typer.echo(f"Remote added: {url}")
+
+        if not git.has_commits(skills_dir):
+            # No repo, or a repo with no snapshot: sync would have nothing to
+            # reconcile and another machine could silently "win" the remote.
+            git.remote_remove(skills_dir)
+            _die(
+                "Error: this Skills directory has no snapshots yet.\n"
+                "Run `skillsync init` (and `skillsync snapshot`) first.\n"
+                "Nothing was changed."
+            )
+
+        git.fetch(skills_dir)
+        branch = git.current_branch(skills_dir)
+        remote_ref = f"{git.REMOTE_NAME}/{branch}"
+        if git.remote_branch(skills_dir, branch) is None:
+            # Fresh remote: the initial backup is always a fast-forward.
+            ok, err = git.push(skills_dir, branch)
+            if not ok:
+                _die(
+                    f"Error: initial backup failed:\n{err}\n"
+                    "The remote was kept — run `skillsync sync` once it works."
+                )
+            typer.echo("Initial backup pushed.")
+        else:
+            if not git.has_merge_base(skills_dir, branch, remote_ref):
+                # Roll back: never keep a remote that `sync` cannot reconcile.
+                git.remote_remove(skills_dir)
+                _die(
+                    "Error: this remote already holds a different history "
+                    "(another machine set it up).\n"
+                    f"To adopt that history here instead:\n"
+                    f"  skillsync clone {url} <path>\n"
+                    "Nothing was changed."
+                )
+            typer.echo(f"Remote state: {_remote_state(skills_dir)}")
+            typer.echo("Run `skillsync sync` to reconcile local and remote.")
+        _print_private_reminder()
+
+
+@remote_app.command("remove")
+def remote_remove() -> None:
+    """Forget the configured remote (local config only)."""
+    with git_errors():
+        skills_dir = _skills_dir()
+        if git.remote_url(skills_dir) is None:
+            _die("Error: no remote is configured.")
+        git.remote_remove(skills_dir)
+        typer.echo(
+            "Remote removed (local config only — "
+            "the GitHub repository was not touched)."
+        )
+
+
+@app.command()
+def clone(
+    url: str = typer.Argument(..., help="Git remote URL to clone from."),
+    path: Path = typer.Argument(..., help="Target Skills directory (must not exist or be empty)."),
+) -> None:
+    """Set up this machine from an existing Skills repository."""
+    _require_git()
+    target = path.expanduser().resolve()
+    if target.exists() and any(target.iterdir()):
+        _die(f"Error: target directory is not empty: {target}")
+    with git_errors():
+        git.clone(url, target)
+        agent = label_agent(target)
+        save_skills_dir(agent.key, target)
+        typer.echo(f"Cloned into {_display_path(target)}")
+        skills = discover_skills(target)
+        if skills:
+            count = len(skills)
+            typer.echo(f"Found {count} skill{'s' if count != 1 else ''}.")
+        else:
+            typer.echo("No skills found yet.")
+    _print_private_reminder()
+
+
+def _handle_conflict(skills_dir: Path, branch: str, use_remote: bool) -> None:
+    """Report a rebase conflict at Skill level, then resolve or abort.
+
+    Never changes history silently: either the user asked to adopt the
+    remote (--use-remote, with the abandoned snapshots pointed out), or the
+    rebase is aborted and the exact pre-sync state is restored.
+    """
+    paths = git.conflicted_paths(skills_dir)
+    roots = set(discover_skills(skills_dir)) | head_skill_roots(skills_dir)
+    grouped = group_by_skill(paths, roots)
+    mapped = {path for paths_ in grouped.values() for path in paths_}
+    ungrouped = [path for path in paths if path not in mapped]
+
+    if use_remote:
+        # During a rebase HEAD is detached on the replay base; the branch
+        # ref still points at the pre-rebase local tip.
+        abandoned = git.rev_parse(skills_dir, branch)
+        git.rebase_abort(skills_dir)
+        git.reset_hard(skills_dir, f"{git.REMOTE_NAME}/{branch}")
+        typer.echo("Adopted the remote version.")
+        if abandoned:
+            typer.echo(
+                "Local snapshots the remote did not have were abandoned —\n"
+                f"recoverable via `git reflog`, starting at {abandoned[:7]}."
+            )
+        return
+
+    git.rebase_abort(skills_dir)
+    typer.echo(
+        "Conflict: the same Skill changed on both sides — automatic merge failed."
+    )
+    typer.echo()
+    names = sorted(grouped)
+    if names:
+        label = "skill" if len(names) == 1 else "skills"
+        typer.echo(f"  conflicting {label}: {', '.join(names)}")
+    for path in ungrouped:
+        typer.echo(f"  conflicting file (outside any Skill): {path}")
+    typer.echo()
+    typer.echo("Sync aborted — nothing changed locally. Your snapshots are safe.")
+    typer.echo()
+    typer.echo("Choose one:")
+    typer.echo("  · Adopt the GitHub version:")
+    typer.echo("      skillsync sync --use-remote")
+    typer.echo("      (abandons ALL local snapshots the remote does not have;")
+    typer.echo("       they stay recoverable via `git reflog`)")
+    typer.echo("  · Keep the local version:")
+    typer.echo("      SkillSync never force-pushes. If you are sure, do it manually:")
+    typer.echo(f"        git push --force-with-lease {git.REMOTE_NAME} {branch}")
+    raise typer.Exit(1)
+
+
+@app.command()
+def sync(
+    use_remote: bool = typer.Option(
+        False,
+        "--use-remote",
+        help="On conflict: adopt the remote version and abandon local-only snapshots.",
+    ),
+) -> None:
+    """Save local changes, then pull and push snapshots with the remote."""
+    _require_git()
+    with git_errors():
+        skills_dir = _skills_dir()
+        url = _require_remote(skills_dir)
+        if not git.has_commits(skills_dir):
+            _die("Error: no local snapshots yet — run `skillsync snapshot` first.")
+
+        typer.echo(f"Syncing with {url} ...")
+
+        # 1. Never mix remote changes with unsaved local state: pre-snapshot.
+        if git.status_porcelain(skills_dir):
+            message = f"Pre-sync snapshot: {_dt.datetime.now():%Y-%m-%d %H:%M}"
+            git.add_all(skills_dir)
+            created = git.commit(skills_dir, message)
+            if created:
+                typer.echo(f"Pre-sync snapshot created: {created}")
+
+        # 2. Fetch. Failure here changes nothing locally.
+        try:
+            git.fetch(skills_dir)
+        except git.GitError as exc:
+            _die(
+                "Error: could not reach the remote (offline, or a credentials\n"
+                f"problem). Local snapshots are safe.\n{exc}"
+            )
+
+        branch = git.current_branch(skills_dir)
+        remote_ref = f"{git.REMOTE_NAME}/{branch}"
+
+        # 3. Remote has nothing yet: the initial backup is all that is needed.
+        if git.remote_branch(skills_dir, branch) is None:
+            ok, err = git.push(skills_dir, branch)
+            _handle_push_result(ok, err)
+            typer.echo("Initial backup pushed.")
+            return
+
+        if not git.has_merge_base(skills_dir, branch, remote_ref):
+            _die(
+                "Error: the remote holds a different history than this machine.\n"
+                "Point `skillsync remote add` at an empty repository, or adopt\n"
+                f"the remote history instead:  skillsync clone {url} <path>"
+            )
+
+        ahead, behind = git.ahead_behind(skills_dir, branch) or (0, 0)
+
+        if behind == 0 and ahead == 0:
+            typer.echo("Everything up to date.")
+            return
+        if behind > 0 and ahead == 0:
+            git.merge_ff_only(skills_dir, remote_ref)
+            typer.echo(f"Pulled {behind} new snapshot{'s' if behind != 1 else ''}.")
+            return
+        if behind == 0:
+            ok, err = git.push(skills_dir, branch)
+            _handle_push_result(ok, err)
+            typer.echo(f"Pushed {ahead} snapshot{'s' if ahead != 1 else ''}.")
+            return
+
+        # 4. Diverged: replay local snapshots on top of the remote.
+        result = git.rebase(skills_dir, remote_ref)
+        if result.ok:
+            ok, err = git.push(skills_dir, branch)
+            _handle_push_result(ok, err)
+            typer.echo(f"Pulled {behind}, pushed {ahead}.")
+            return
+
+        _handle_conflict(skills_dir, branch, use_remote)
 
 
 if __name__ == "__main__":

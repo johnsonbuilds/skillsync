@@ -132,6 +132,11 @@ Or restore a specific Git commit:
 skillsync restore browser-research a83f91c
 ```
 
+### GitHub backup & multi-machine sync
+
+Back up snapshots to a private GitHub repository and keep several machines
+in step — see [GitHub Remote Synchronization](#github-remote-synchronization).
+
 ---
 
 ## Quick Start
@@ -208,14 +213,100 @@ Your previous version is restored without deleting the Git history.
 
 ---
 
+## GitHub Remote Synchronization
+
+Local snapshots protect you from bad Agent edits. A remote protects you
+from a dead laptop — and keeps your Skills identical on every machine you
+work from.
+
+### Set up (once)
+
+Create an **empty, private** GitHub repository (e.g. `you/skills`), then:
+
+```bash
+skillsync remote add git@github.com:you/skills.git
+```
+
+The URL is validated before anything is written, and your local snapshots
+are pushed immediately as the initial backup.
+
+### Daily use
+
+```bash
+skillsync sync
+```
+
+One command that does the right thing, in order:
+
+```text
+Unsaved local changes?
+        ↓  automatic pre-sync snapshot (they are never mixed with remote work)
+Fetch the remote
+        ↓
+Remote has new snapshots?  ── pull (fast-forward, or replay local on top)
+        ↓
+Push your new snapshots
+```
+
+### Set up a second machine
+
+```bash
+skillsync clone git@github.com:you/skills.git ~/.hermes/skills
+```
+
+Then use `skillsync` there as usual. `status` shows the remote state on
+every machine:
+
+```text
+Remote: git@github.com:you/skills.git
+Remote state: up to date          (or: ahead 2 / behind 1 / unknown (offline))
+```
+
+### When both machines changed the same Skill
+
+Git merges different Skills automatically. Only when **the same Skill**
+changed on both sides does `sync` stop and ask you to choose:
+
+```text
+Conflict: the same Skill changed on both sides — automatic merge failed.
+
+  conflicting skill: productivity/pdf
+
+Sync aborted — nothing changed locally. Your snapshots are safe.
+
+Choose one:
+  · Adopt the GitHub version:  skillsync sync --use-remote
+  · Keep the local version:    manual git push --force-with-lease (rare)
+```
+
+SkillSync **never force-pushes** and never picks a winner on its own.
+
+### Authentication
+
+SkillSync adds no auth layer of its own — git's credentials are used as-is:
+
+| Setup | Works via |
+|---|---|
+| GitHub CLI | `gh auth login` (git picks up its credential helper) |
+| SSH | `ssh-keygen` + add key to GitHub, use `git@github.com:...` URLs |
+| Token | Personal access token over HTTPS (credential manager or `git-credential-store`) |
+
+If `remote add` reports `could not reach`, finish one of the setups above first.
+
+> **Two things to check before your first push:** the repository must be
+> **private**, and Skills directories often contain plaintext API keys —
+> remove them or move them to environment variables first.
+
+---
+
 ## CLI
 
-The MVP intentionally has a very small command surface:
+The command surface stays deliberately small:
 
 ```bash
 skillsync init
 
-skillsync status
+skillsync status          # shows remote state too, once a remote is set
 
 skillsync diff [skill]
 
@@ -224,13 +315,20 @@ skillsync snapshot [-m "message"]
 skillsync log [skill]
 
 skillsync restore <skill> [commit]
+
+skillsync remote [add <url> | remove]
+
+skillsync clone <url> <path>
+
+skillsync sync [--use-remote]
 ```
 
 That's it.
 
 SkillSync is not trying to replace Git.
 
-It adds a Skill-aware layer on top of Git.
+It adds a Skill-aware layer on top of Git — and a safety-first sync layer
+on top of `git push`.
 
 ---
 
@@ -275,7 +373,8 @@ Git remains responsible for storing the actual history.
 
 Your Skills stay on your machine.
 
-No cloud service is required.
+No cloud service is required — the GitHub remote is optional, and every
+local command works fully offline.
 
 ### Git-native
 
@@ -370,12 +469,20 @@ The priority is real-world usage over feature completeness.
 * [x] `log`
 * [x] `restore`
 
+### v0.3 — Remote synchronization
+
+* [x] `skillsync remote add/remove` (URL validation, initial backup push)
+* [x] `skillsync sync` (pre-sync snapshot → fetch → rebase → push)
+* [x] `skillsync clone <url> <path>` (second-machine setup)
+* [x] `status` remote state (ahead/behind, offline-safe)
+* [x] Conflict policy: abort + skill-level report + explicit `--use-remote`
+* [x] Safety rules: never force-push, timeouts, offline never touches local state
+
 ### Later
 
 Potential future work includes:
 
-* GitHub remote synchronization
-* Multi-machine recovery
+* `remote add --create` (create the private GitHub repo via `gh` CLI)
 * Better CLI UX
 * Optional Web/Desktop UI
 
