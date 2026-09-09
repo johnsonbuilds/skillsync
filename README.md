@@ -147,7 +147,19 @@ in step — see [GitHub Remote Synchronization](#github-remote-synchronization).
 > Claude Code and Codex Skills directories; any other directory works via
 > `--path`.
 
-### Install
+### Let your Agent use SkillSync
+
+If you want your Agent to manage Skills with SkillSync, paste this guide into
+your Agent's context:
+
+```
+https://github.com/johnsonbuilds/skillsync/blob/main/skill.md
+```
+
+The Agent will learn how to install, initialize, and operate SkillSync on your
+behalf — always asking for your confirmation before running any command.
+
+### Install Manual
 
 Requires Python 3.12+ and git.
 

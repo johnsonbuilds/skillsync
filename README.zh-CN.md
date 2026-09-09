@@ -146,7 +146,17 @@ skillsync restore browser-research a83f91c
 > SkillSync 目前是早期 MVP。它会自动检测 Hermes、OpenClaw、Claude Code
 > 和 Codex 的 Skills 目录；其他任何目录都可以通过 `--path` 使用。
 
-### 安装
+### 让你的 Agent 使用 SkillSync
+
+如果你想让 Agent 用 SkillSync 管理 Skills，把这份指南贴给你的 Agent：
+
+```
+https://github.com/johnsonbuilds/skillsync/blob/main/skill.md
+```
+
+Agent 会学会如何安装、初始化和操作 SkillSync——每次执行命令前都会先征求你的确认。
+
+### 手动安装
 
 需要 Python 3.12+ 和 git。
 
