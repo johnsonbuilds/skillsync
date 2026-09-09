@@ -153,7 +153,7 @@ If you want your Agent to manage Skills with SkillSync, paste this guide into
 your Agent's context:
 
 ```
-https://github.com/johnsonbuilds/skillsync/blob/main/skill.md
+https://github.com/johnsonbuilds/skillsync/blob/main/SKILL.md
 ```
 
 The Agent will learn how to install, initialize, and operate SkillSync on your

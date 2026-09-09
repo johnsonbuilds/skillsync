@@ -151,7 +151,7 @@ skillsync restore browser-research a83f91c
 如果你想让 Agent 用 SkillSync 管理 Skills，把这份指南贴给你的 Agent：
 
 ```
-https://github.com/johnsonbuilds/skillsync/blob/main/skill.md
+https://github.com/johnsonbuilds/skillsync/blob/main/SKILL.md
 ```
 
 Agent 会学会如何安装、初始化和操作 SkillSync——每次执行命令前都会先征求你的确认。
